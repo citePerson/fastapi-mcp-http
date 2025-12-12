@@ -1,0 +1,86 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List
+import uvicorn
+from fastapi_mcp.server import FastApiMCP
+
+class User(BaseModel):
+    id: int
+    name: str
+    email: str
+
+
+class UserCreate(BaseModel):
+    name: str
+    email: str
+
+
+app = FastAPI(
+    title="User Management API",
+    description="A sample API for managing users",
+    version="1.0.0"
+)
+
+# 模拟数据库
+users_db = [
+    User(id=1, name="Alice", email="alice@example.com"),
+    User(id=2, name="Bob", email="bob@example.com")
+]
+
+
+# 注意：为每个路由显式指定 operation_id（推荐）
+@app.get("/api/users", response_model=List[User], tags=["users"], operation_id="list_users")
+async def list_users():
+    return users_db
+
+
+@app.get("/api/users/{user_id}", response_model=User, tags=["users"], operation_id="get_user")
+async def get_user(user_id: int):
+    for user in users_db:
+        if user.id == user_id:
+            return user
+    raise HTTPException(status_code=404, detail="User not found")
+
+
+@app.post("/api/users", response_model=User, tags=["users"], operation_id="create_user")
+async def create_user(user: UserCreate):
+    new_id = max(u.id for u in users_db) + 1 if users_db else 1
+    new_user = User(id=new_id, name=user.name, email=user.email)
+    users_db.append(new_user)
+    return new_user
+
+
+@app.put("/api/users/{user_id}", response_model=User, tags=["users"], operation_id="update_user")
+async def update_user(user_id: int, user: UserCreate):
+    for i, existing_user in enumerate(users_db):
+        if existing_user.id == user_id:
+            updated_user = User(id=user_id, name=user.name, email=user.email)
+            users_db[i] = updated_user
+            return updated_user
+    raise HTTPException(status_code=404, detail="User not found")
+
+
+@app.delete("/api/users/{user_id}", tags=["users"], operation_id="delete_user")
+async def delete_user(user_id: int):
+    for i, user in enumerate(users_db):
+        if user.id == user_id:
+            users_db.pop(i)
+            return {"message": "User deleted successfully"}
+    raise HTTPException(status_code=404, detail="User not found")
+
+mcp = FastApiMCP(
+    fastapi=app,
+    name="User Management MCP Server",
+    description="MCP server auto-generated from FastAPI routes",
+    describe_all_responses=True,
+    describe_full_response_schema=True,
+    # 可选：只暴露带 'users' 标签的路由
+    include_tags=["users"]
+)
+
+mcp.mount_http(router=app, mount_path="/mcp")
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
