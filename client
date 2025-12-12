@@ -1,0 +1,169 @@
+import asyncio
+import json
+import httpx
+import uuid
+from typing import Dict, Any, List
+
+
+class CorrectedMCPClient:
+    """MCP客户端"""
+
+    def __init__(self, server_url: str = "http://localhost:8000"):
+        self.server_url = server_url
+        self.mcp_url = f"{server_url}/mcp"
+        self.client = httpx.AsyncClient(timeout=30.0)
+        self.request_id = 1
+        self.session_id = None
+
+    async def initialize(self) -> bool:
+        """初始化 MCP 连接并获取会话ID"""
+        print("尝试初始化 MCP 连接...")
+
+        request_data = {
+            "jsonrpc": "2.0",
+            "id": self.request_id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-01-22",
+                "capabilities": {
+                    "sampling": {},
+                    "roots": {},
+                    "prompts": {}
+                },
+                "clientInfo": {
+                    "name": "Python Test Client",
+                    "version": "1.0.0"
+                }
+            }
+        }
+
+        self.request_id += 1
+
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            }
+
+            response = await self.client.post(
+                self.mcp_url,
+                json=request_data,
+                headers=headers
+            )
+
+            print(f"初始化响应状态: {response.status_code}")
+            if response.status_code == 200:
+                result = response.json()
+                print(f"初始化响应内容: {json.dumps(result, indent=2)}")
+
+                # 从响应头中获取会话ID
+                if 'mcp-session-id' in response.headers:
+                    self.session_id = response.headers['mcp-session-id']
+                    print(f"获取到会话ID: {self.session_id}")
+
+                return "result" in result
+            else:
+                print(f"初始化错误响应: {response.text}")
+                return False
+
+        except Exception as e:
+            print(f"初始化请求失败: {e}")
+            return False
+
+    async def send_jsonrpc_request(self, method: str, params: Dict = None) -> Dict:
+        """发送 JSON-RPC 请求，使用从初始化获得的会话ID（通过 header 传递）"""
+        request_data = {
+            "jsonrpc": "2.0",
+            "id": self.request_id,
+            "method": method,
+            "params": params or {}
+        }
+
+        print(f"发送请求: {json.dumps(request_data, indent=2)}")
+        self.request_id += 1
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream"
+        }
+
+        if self.session_id:
+            headers["MCP-Session-ID"] = self.session_id
+        else:
+            print("警告: 没有会话ID，可能会失败")
+
+        try:
+            response = await self.client.post(
+                self.mcp_url,  # ← 不再拼接 ?session_id=...
+                json=request_data,
+                headers=headers
+            )
+
+            print(f"响应状态: {response.status_code}")
+            if response.status_code == 200:
+                result = response.json()
+                print(f"响应内容: {json.dumps(result, indent=2)}")
+                return result
+            else:
+                print(f"错误响应: {response.text}")
+                return {}
+        except Exception as e:
+            print(f"请求失败: {e}")
+            return {}
+
+    async def list_tools(self) -> List[Dict]:
+        """获取工具列表"""
+        result = await self.send_jsonrpc_request("tools/list")
+        tools = result.get("result", {}).get("tools", [])
+        print(f"发现 {len(tools)} 个工具")
+        return tools
+
+    async def call_tool(self, name: str, arguments: Dict = None) -> List[Dict]:
+        """调用工具"""
+        result = await self.send_jsonrpc_request("tools/call", {
+            "name": name,
+            "arguments": arguments or {}
+        })
+        return result.get("result", [])
+
+    async def close(self):
+        """关闭连接"""
+        await self.client.aclose()
+
+
+async def main():
+    client = CorrectedMCPClient()
+
+    try:
+        # 初始化连接
+        print("\n=== 初始化 MCP 连接 ===")
+        initialized = await client.initialize()
+        if not initialized:
+            print("初始化失败")
+            return
+
+        # 获取工具列表
+        print("\n=== 获取工具列表 ===")
+        tools = await client.list_tools()
+        for i, tool in enumerate(tools):
+            print(f"{i + 1}. {tool['name']}: {tool.get('description', '无描述')}")
+
+        # 调用工具示例
+        if tools:
+            print("\n=== 调用工具示例 ===")
+            first_tool = tools[2]
+            print(f"调用工具: {first_tool['name']}")
+            result = await client.call_tool(first_tool['name'], {"user_id": 1})
+            print("调用结果:")
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    except Exception as e:
+        print(f"发生错误: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        await client.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
